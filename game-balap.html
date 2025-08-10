@@ -1,108 +1,605 @@
-<!DOCTYPE html>
-<html lang="en">
+<!doctype html>
+<html lang="id">
 <head>
-<meta charset="UTF-8">
-<title>Game Balap Mobil 3D</title>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no" />
+<title>Air Strike — Lite (Auto-Fire)</title>
 <style>
-    body { margin: 0; overflow: hidden; background: #000; }
-    #score {
-        position: absolute;
-        top: 10px; left: 10px;
-        color: white;
-        font-family: Arial, sans-serif;
-        font-size: 20px;
-        z-index: 10;
-    }
+  html,body{height:100%;margin:0;background:#111;font-family:system-ui,Segoe UI,Roboto;}
+  .wrap{display:flex;align-items:center;justify-content:center;height:100%;}
+  .frame{width:360px;max-width:96vw;height:640px;max-height:88vh;border-radius:12px;background:#071624;box-shadow:0 8px 28px rgba(0,0,0,0.6);position:relative;overflow:hidden}
+  canvas{display:block;width:100%;height:100%;}
+  .ui{position:absolute;left:8px;top:8px;color:#cfefff;z-index:5;font-size:13px}
+  .ui div{margin-bottom:4px}
+  #startOverlay{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:10;background:rgba(0,0,0,0.7);padding:18px;border-radius:12px;color:#fff;text-align:center;width:84%;box-shadow:0 6px 18px rgba(0,0,0,0.6)}
+  #startBtn{margin-top:12px;background:#2ecc71;border:none;padding:10px 18px;border-radius:8px;color:#052417;font-weight:700;font-size:16px}
+  #hint{position:absolute;right:8px;bottom:8px;color:#fff;z-index:6;font-size:12px;opacity:0.85}
 </style>
 </head>
 <body>
-<div id="score">Score: 0</div>
-<script src="https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.min.js"></script>
+  <div class="wrap">
+    <div class="frame" id="frame">
+      <canvas id="game"></canvas>
+      <div class="ui">
+        <div>Level: <span id="uiLevel">1</span> &nbsp; Score: <span id="uiScore">0</span></div>
+        <div>HS: <span id="uiHS">0</span> &nbsp; HP: <span id="uiHP">100</span> &nbsp; Wpn: <span id="uiWpn">1</span></div>
+      </div>
+      <div id="hint">Geser/drag untuk gerak • Fire = otomatis</div>
+      <div id="startOverlay">
+        <h2>Selamat Datang di Air Strike!</h2>
+        <p>Kalahkan musuh, kumpulkan power-up (kuning=weapon, merah=HP, biru=ship) — tembakan otomatis.</p>
+        <button id="startBtn">Mulai Game</button>
+      </div>
+    </div>
+  </div>
+
 <script>
-let scene, camera, renderer;
-let player, road;
-let enemies = [];
-let score = 0;
-let gameOver = false;
-let speed = 0.1;
+/* Air Strike Lite — single file
+   - Auto-fire, touch-drag, light performance for low-end phones
+   - Copy/save as HTML and open in mobile browser
+*/
 
-init();
-animate();
+(() => {
+  const canvas = document.getElementById('game');
+  const frame = document.getElementById('frame');
+  // virtual resolution (fixed for predictable speed)
+  const W = 360, H = 640;
+  canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext('2d');
 
-function init() {
-    scene = new THREE.Scene();
-    camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
-    camera.position.set(0, 5, 10);
-    camera.lookAt(0, 0, 0);
+  // UI elements
+  const uiLevel = document.getElementById('uiLevel');
+  const uiScore = document.getElementById('uiScore');
+  const uiHS = document.getElementById('uiHS');
+  const uiHP = document.getElementById('uiHP');
+  const uiWpn = document.getElementById('uiWpn');
+  const startOverlay = document.getElementById('startOverlay');
+  const startBtn = document.getElementById('startBtn');
 
-    renderer = new THREE.WebGLRenderer({ antialias: true });
-    renderer.setSize(window.innerWidth, window.innerHeight);
-    document.body.appendChild(renderer.domElement);
+  // Game state
+  let running = false;
+  let lastTime = 0;
+  let score = 0;
+  let highscore = parseInt(localStorage.getItem('ase_hs') || '0',10);
+  uiHS.textContent = highscore;
+  let level = 1;
+  let hp = 100;
+  let weaponLevel = 1;
+  let shipLevel = 1;
 
-    const light = new THREE.DirectionalLight(0xffffff, 1);
-    light.position.set(0, 10, 5);
-    scene.add(light);
-    scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+  // object pools (arrays)
+  const bullets = [];        // player bullets
+  const enemies = [];        // enemy objects
+  const enemyBullets = [];   // enemy bullets
+  const powerups = [];       // powerups
 
-    const roadGeo = new THREE.BoxGeometry(5, 0.1, 200);
-    const roadMat = new THREE.MeshPhongMaterial({ color: 0x333333 });
-    road = new THREE.Mesh(roadGeo, roadMat);
-    road.position.z = -100;
-    scene.add(road);
+  // limits (to keep lightweight)
+  const MAX_BULLETS = 25;
+  const MAX_ENEMIES = 10;
+  const MAX_EBULLETS = 24;
+  const MAX_POWERUPS = 6;
 
-    const carGeo = new THREE.BoxGeometry(1, 0.5, 2);
-    const carMat = new THREE.MeshPhongMaterial({ color: 0x00ff00 });
-    player = new THREE.Mesh(carGeo, carMat);
-    player.position.set(0, 0.5, 5);
-    scene.add(player);
+  // player
+  const player = { x: W/2, y: H - 80, w: 36, h: 28, speed: 240 };
 
-    window.addEventListener('keydown', (e) => {
-        if (e.key === 'ArrowLeft') player.position.x -= 1;
-        if (e.key === 'ArrowRight') player.position.x += 1;
-    });
+  // spawn timers
+  let lastEnemySpawn = 0;
+  let enemySpawnInterval = 900; // ms (decreases with level)
+  let lastAutoFire = 0;
+  let baseFireRate = 420; // ms
+  let lastPowerupSpawn = 0;
+  const MIN_POWERUP_INTERVAL = 4200;
 
-    window.addEventListener('touchstart', (e) => {
-        let x = e.touches[0].clientX;
-        if (x < window.innerWidth / 2) player.position.x -= 1;
-        else player.position.x += 1;
-    });
+  // boss flag
+  let bossActive = false;
+  let enemiesToClear = 6 + Math.floor(level*1.2);
 
-    spawnEnemy();
-}
+  // touch controls
+  let activePointerId = null;
 
-function spawnEnemy() {
-    if (gameOver) return;
-    const enemyGeo = new THREE.BoxGeometry(1, 0.5, 2);
-    const enemyMat = new THREE.MeshPhongMaterial({ color: 0xff0000 });
-    const enemy = new THREE.Mesh(enemyGeo, enemyMat);
-    enemy.position.set((Math.random() * 4) - 2, 0.5, -50);
-    scene.add(enemy);
-    enemies.push(enemy);
-    setTimeout(spawnEnemy, 1000 + Math.random() * 1000);
-}
+  // audio (very lightweight beeps) — only if allowed
+  let audioCtx = null;
+  try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch(e){ audioCtx = null; }
 
-function animate() {
-    requestAnimationFrame(animate);
-    if (!gameOver) {
-        enemies.forEach((enemy, index) => {
-            enemy.position.z += speed * 5;
-            if (enemy.position.z > 10) {
-                scene.remove(enemy);
-                enemies.splice(index, 1);
-                score++;
-                document.getElementById("score").innerText = "Score: " + score;
-            }
-            if (Math.abs(enemy.position.x - player.position.x) < 1 &&
-                Math.abs(enemy.position.z - player.position.z) < 1) {
-                gameOver = true;
-                document.getElementById("score").innerText += " - GAME OVER";
-            }
-        });
-        road.position.z += speed * 5;
-        if (road.position.z > 0) road.position.z = -100;
+  // utilities
+  function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
+
+  // start game
+  function startGame(){
+    // reset state
+    running = true;
+    startOverlay.style.display = 'none';
+    score = 0; level = 1; hp = 100; weaponLevel = 1; shipLevel = 1;
+    bullets.length = 0; enemies.length = 0; enemyBullets.length = 0; powerups.length = 0;
+    lastTime = performance.now();
+    lastEnemySpawn = 0; lastAutoFire = 0; lastPowerupSpawn = 0;
+    enemySpawnInterval = 900;
+    bossActive = false;
+    enemiesToClear = 6 + Math.floor(level*1.2);
+    uiUpdate();
+    requestAnimationFrame(loop);
+  }
+
+  startBtn.addEventListener('click', () => {
+    // resume audio context on user gesture (some browsers require)
+    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume().catch(()=>{});
+    startGame();
+  });
+
+  // input: touch drag
+  canvas.addEventListener('touchstart', (ev) => {
+    const t = ev.changedTouches[0];
+    activePointerId = t.identifier;
+    const pos = screenToGamePos(t);
+    // if touch is on rightmost 18% -> quick auto-fire (but fire is auto anyway)
+    player.x = clamp(pos.x, 20, W-20);
+    player.y = clamp(pos.y, 60, H-60);
+    // hide overlay on touch (first touch)
+    if (!running) { startBtn.click(); }
+    ev.preventDefault();
+  }, { passive: false });
+  canvas.addEventListener('touchmove', (ev) => {
+    for (let t of ev.changedTouches){
+      if (t.identifier === activePointerId){
+        const pos = screenToGamePos(t);
+        player.x = clamp(pos.x, 20, W-20);
+        player.y = clamp(pos.y, 60, H-60);
+      }
     }
-    renderer.render(scene, camera);
-}
+    ev.preventDefault();
+  }, { passive: false });
+  canvas.addEventListener('touchend', (ev) => {
+    for (let t of ev.changedTouches) if (t.identifier === activePointerId) activePointerId = null;
+    ev.preventDefault();
+  }, { passive: false });
+
+  // mouse fallback for desktop testing
+  let mouseDown = false;
+  canvas.addEventListener('mousedown', (e)=> { mouseDown = true; const p = screenToGamePos(e); player.x = p.x; player.y = p.y; if (!running) startBtn.click(); });
+  canvas.addEventListener('mousemove', (e)=> { if (mouseDown) { const p = screenToGamePos(e); player.x = p.x; player.y = p.y; }});
+  canvas.addEventListener('mouseup', ()=> { mouseDown = false; });
+
+  // keyboard fallback (arrow keys / WASD)
+  const keys = {};
+  window.addEventListener('keydown', (e)=> { keys[e.key] = true; if (!running && e.key === ' '){ startBtn.click(); }});
+  window.addEventListener('keyup', (e)=> { keys[e.key] = false; });
+
+  // coordinate helper (convert client to canvas/game coords)
+  function screenToGamePos(evt){
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = W / rect.width;
+    const scaleY = H / rect.height;
+    return { x: (evt.clientX - rect.left) * scaleX, y: (evt.clientY - rect.top) * scaleY };
+  }
+
+  // spawn enemy (small or big)
+  function spawnEnemy(kind='small'){
+    if (enemies.length >= MAX_ENEMIES) return;
+    const x = Math.random()*(W-60) + 30;
+    const y = -10 - Math.random()*40;
+    if (kind === 'small') {
+      enemies.push({
+        x,y,w:28,h:22,type:'small',hp:1 + Math.floor(level*0.6),
+        vx: (Math.random()-0.5)*30, vy: 60 + level*6, fireRate: Math.max(900 - level*10, 480),
+        lastShot:0, bob:1
+      });
+    } else {
+      enemies.push({
+        x,y,w:56,h:44,type:'big',hp:4 + Math.floor(level*1.8),
+        vx: (Math.random()-0.5)*18, vy: 48 + level*6, fireRate: Math.max(700 - level*12, 380),
+        lastShot:0, bob:2
+      });
+    }
+  }
+
+  // spawn boss (very simple)
+  function spawnBoss(){
+    if (bossActive) return;
+    bossActive = true;
+    const b = { x: W/2, y:-80, w:140, h:80, type:'boss', hp: 40 + level*60, vy: 28, lastShot:0, fireRate: Math.max(700 - level*12, 380) };
+    enemies.push(b);
+  }
+
+  // spawn powerup randomly or at x,y
+  function spawnPowerupAt(x,y){
+    if (powerups.length >= MAX_POWERUPS) return;
+    const r = Math.random()*100;
+    let kind='weapon'; if (r < 65) kind='weapon'; else if (r < 90) kind='hp'; else kind='ship';
+    powerups.push({ x,y, r:8, kind, vy: 68 + Math.random()*28 });
+  }
+
+  // enemy shoot at player
+  function enemyShoot(ex, ey){
+    if (enemyBullets.length >= MAX_EBULLETS) return;
+    const angle = Math.atan2(player.y - ey, player.x - ex) + (Math.random()-0.5)*0.28;
+    enemyBullets.push({ x: ex, y: ey, vx: Math.cos(angle)*160, vy: Math.sin(angle)*160, w:4, h:8 });
+    playTone('enemyshot', 0.04);
+  }
+
+  // player shoot
+  function playerShoot(){
+    if (bullets.length >= MAX_BULLETS) return;
+    // weaponlevel patterns
+    if (weaponLevel <= 1) {
+      bullets.push({ x: player.x, y: player.y - 26, vx:0, vy:-520, w:4,h:10 });
+    } else if (weaponLevel === 2) {
+      bullets.push({ x: player.x-8, y: player.y - 24, vx:-40, vy:-520, w:4,h:10 });
+      bullets.push({ x: player.x+8, y: player.y - 24, vx:40, vy:-520, w:4,h:10 });
+    } else if (weaponLevel === 3) {
+      bullets.push({ x: player.x, y: player.y - 26, vx:0, vy:-540, w:4,h:10 });
+      bullets.push({ x: player.x-12, y: player.y - 24, vx:-60, vy:-520, w:4,h:10 });
+      bullets.push({ x: player.x+12, y: player.y - 24, vx:60, vy:-520, w:4,h:10 });
+    } else {
+      bullets.push({ x: player.x-8, y: player.y - 24, vx:-40, vy:-540, w:4,h:10 });
+      bullets.push({ x: player.x+8, y: player.y - 24, vx:40, vy:-540, w:4,h:10 });
+      bullets.push({ x: player.x, y: player.y - 30, vx:0, vy:-600, w:4,h:10 });
+    }
+    playTone('playershot', 0.06);
+  }
+
+  // particles / effects minimal: we just draw small flashes (no heavy particle system)
+
+  // audio helper (tiny WebAudio tones)
+  function playTone(type, vol=0.12){
+    if (!audioCtx) return;
+    const now = audioCtx.currentTime;
+    if (type === 'playershot'){
+      const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+      o.type = 'square'; o.frequency.setValueAtTime(1100 + Math.random()*60, now);
+      g.gain.setValueAtTime(vol, now); g.gain.exponentialRampToValueAtTime(0.001, now+0.07);
+      o.connect(g); g.connect(audioCtx.destination); o.start(now); o.stop(now+0.08);
+    } else if (type === 'enemyshot'){
+      const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+      o.type = 'sawtooth'; o.frequency.setValueAtTime(560 + Math.random()*80, now);
+      g.gain.setValueAtTime(vol, now); g.gain.exponentialRampToValueAtTime(0.001, now+0.10);
+      o.connect(g); g.connect(audioCtx.destination); o.start(now); o.stop(now+0.11);
+    } else if (type === 'explosion'){
+      const bufferSize = audioCtx.sampleRate * 0.12;
+      const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i=0;i<bufferSize;i++) data[i] = (Math.random()*2-1)*(1 - i/bufferSize);
+      const src = audioCtx.createBufferSource(), g = audioCtx.createGain();
+      src.buffer = buffer; g.gain.value = vol*1.2; src.connect(g); g.connect(audioCtx.destination); src.start(now);
+    } else if (type === 'pickup'){
+      const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+      o.type='triangle'; o.frequency.setValueAtTime(1400, now);
+      g.gain.setValueAtTime(vol, now); g.gain.exponentialRampToValueAtTime(0.001, now+0.12);
+      o.connect(g); g.connect(audioCtx.destination); o.start(now); o.stop(now+0.13);
+    } else if (type === 'levelup'){
+      const o1 = audioCtx.createOscillator(), o2 = audioCtx.createOscillator(), g = audioCtx.createGain();
+      o1.frequency.setValueAtTime(520, now); o2.frequency.setValueAtTime(760, now); g.gain.setValueAtTime(vol*0.8, now);
+      o1.connect(g); o2.connect(g); g.connect(audioCtx.destination); o1.start(now); o2.start(now); o1.stop(now+0.22); o2.stop(now+0.22);
+    } else if (type === 'boss'){
+      const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+      o.type='square'; o.frequency.setValueAtTime(160, now); g.gain.setValueAtTime(vol, now); g.gain.exponentialRampToValueAtTime(0.001, now+0.5);
+      o.connect(g); g.connect(audioCtx.destination); o.start(now); o.stop(now+0.5);
+    }
+  }
+
+  // main loop
+  function loop(now){
+    if (!running) return;
+    const dt = Math.min(40, now - lastTime);
+    lastTime = now;
+    update(dt);
+    render();
+    requestAnimationFrame(loop);
+  }
+
+  // update logic
+  function update(dtMs){
+    const dt = dtMs / 1000;
+
+    // keyboard movement (tiny)
+    if (!activePointerId){
+      let vx=0, vy=0;
+      if (keysPressed('ArrowLeft','a')) vx=-1;
+      else if (keysPressed('ArrowRight','d')) vx=1;
+      if (keysPressed('ArrowUp','w')) vy=-1;
+      else if (keysPressed('ArrowDown','s')) vy=1;
+      player.x = clamp(player.x + vx*player.speed*dt, 18, W-18);
+      player.y = clamp(player.y + vy*player.speed*dt, 60, H-60);
+    }
+
+    // auto-fire
+    const now = performance.now();
+    const rate = Math.max(80, baseFireRate - (weaponLevel-1)*60);
+    if (now - lastAutoFire > rate) { lastAutoFire = now; playerShoot(); }
+
+    // spawn enemies regularly
+    if (!bossActive && now - lastEnemySpawn > enemySpawnInterval) {
+      lastEnemySpawn = now;
+      // spawn 1-2 enemies
+      const spawnCount = (Math.random()<0.15 && enemies.length < MAX_ENEMIES-1) ? 2 : 1;
+      for (let i=0;i<spawnCount;i++){
+        const kind = (Math.random()*100 < Math.min(20 + level*2, 70)) ? 'big' : 'small';
+        spawnEnemy(kind);
+      }
+      // adjust difficulty slightly
+      enemySpawnInterval = Math.max(520, 900 - level*30);
+    }
+
+    // each frame update enemies
+    for (let i=enemies.length-1;i>=0;i--){
+      const e = enemies[i];
+      e.y += e.vy * dt;
+      e.x += e.vx * dt;
+      // bobbing
+      if (e.bob) e.x += Math.sin((now + e.x)*0.002) * 0.6 * e.bob;
+      // shooting
+      if (now - (e.lastShot||0) > e.fireRate && Math.random() < 0.7) {
+        e.lastShot = now;
+        enemyShoot(e.x, e.y + (e.h/2));
+      }
+      // bounds
+      if (e.x < 18) { e.x = 18; e.vx = Math.abs(e.vx); }
+      if (e.x > W-18) { e.x = W-18; e.vx = -Math.abs(e.vx); }
+      if (e.y > H + 60) { enemies.splice(i,1); if (!e.isBoss) enemiesToClear = Math.max(0, enemiesToClear-1); }
+    }
+
+    // enemies bullets
+    for (let i=enemyBullets.length-1;i>=0;i--){
+      const b = enemyBullets[i];
+      b.x += b.vx * dt; b.y += b.vy * dt;
+      // collision with player
+      if (rectCircleCollide(player.x, player.y, player.w, player.h, b.x, b.y, 4)) {
+        // hit
+        enemyBullets.splice(i,1);
+        hp -= 6 + Math.random()*6;
+        playTone('hit', 0.12);
+        if (hp <= 0) { gameOver(); return; }
+      } else if (b.x < -20 || b.x > W+20 || b.y < -40 || b.y > H+60) {
+        enemyBullets.splice(i,1);
+      }
+    }
+
+    // player bullets vs enemies
+    for (let i=bullets.length-1;i>=0;i--){
+      const b = bullets[i];
+      b.x += b.vx * dt; b.y += b.vy * dt;
+      // check hit
+      let hit = false;
+      for (let j=enemies.length-1;j>=0;j--){
+        const e = enemies[j];
+        if (pointRectCollide(b.x, b.y, e.x, e.y, e.w, e.h)) {
+          // hit
+          bullets.splice(i,1);
+          e.hp -= 1 + Math.floor(weaponLevel/2);
+          // tiny flash handled in render by tint flag
+          e._hit = 8; // frames of hit flash
+          if (e.hp <= 0) {
+            // spawn some powerups on death
+            if (e.isBoss) {
+              // boss death: big reward
+              for (let k=0;k<6;k++){ spawnPowerupAt(e.x + (Math.random()-0.5)*60, e.y + (Math.random()-0.5)*20); }
+              score += 1000 + level*200;
+              bossActive = false;
+              level = Math.min(MAX_LEVEL, level+1);
+              lastEnemySpawn = now + 800;
+              playTone('levelup', 0.12);
+              // start next level after short delay by setting enemiesToClear
+              enemies.splice(j,1);
+              enemiesToClear = 6 + Math.floor(level*1.2);
+              setTimeout(()=>{},200);
+            } else {
+              // normal enemy
+              if (Math.random()*100 < (e.type==='big' ? 60 : 30)) spawnPowerupAt(e.x, e.y);
+              score += (e.type==='big' ? 150 + level*8 : 50 + level*4);
+              enemies.splice(j,1);
+              enemiesToClear = Math.max(0, enemiesToClear-1);
+              playTone('explosion', 0.12);
+            }
+          }
+          hit = true;
+          break;
+        }
+      }
+      if (hit) continue;
+      // bullet offscreen
+      if (b.y < -30 || b.y > H+50 || b.x < -40 || b.x > W+40) bullets.splice(i,1);
+    }
+
+    // powerups movement and pickup
+    for (let i=powerups.length-1;i>=0;i--){
+      const p = powerups[i];
+      p.y += p.vy * dt;
+      // pickup if overlap with player
+      if (pointCircleCollide(player.x, player.y, player.w, player.h, p.x, p.y, p.r)) {
+        // apply
+        if (p.kind === 'weapon') weaponLevel = Math.min(5, weaponLevel + 1);
+        else if (p.kind === 'hp') hp = Math.min(START_HP + (shipLevel-1)*20, hp + 28 + Math.floor(Math.random()*24));
+        else if (p.kind === 'ship') { shipLevel = Math.min(5, shipLevel + 1); player.speed = Math.min(420, player.speed + 20); hp = Math.min(START_HP + (shipLevel-1)*20, hp + 18); }
+        score += 15;
+        powerups.splice(i,1);
+        playTone('pickup',0.12);
+      } else if (p.y > H + 60) {
+        powerups.splice(i,1);
+      }
+    }
+
+    // periodic powerup spawn to ensure not empty
+    if (now - lastPowerupSpawn > MIN_POWERUP_INTERVAL) {
+      lastPowerupSpawn = now;
+      spawnPowerupAt(Math.random()*(W-60)+30, -10);
+    }
+
+    // if all regular enemies cleared and not boss yet -> spawn boss
+    if (!bossActive && enemiesToClear <= 0) {
+      spawnBoss();
+    }
+
+    // handle level/time scaling simple: if many kills, increase level gradually
+    // (level is increased on boss death above)
+    uiUpdate();
+  }
+
+  function uiUpdate(){
+    uiLevel.textContent = level;
+    uiScore.textContent = score;
+    uiHP.textContent = Math.max(0, Math.round(hp));
+    uiWpn.textContent = weaponLevel;
+    if (score > highscore) { highscore = score; localStorage.setItem('ase_hs', String(highscore)); uiHS.textContent = highscore; }
+  }
+
+  // rendering
+  function render(){
+    // clear
+    ctx.clearRect(0,0,W,H);
+    // background (tile illusion) — simple gradient and hills already static via fill
+    // draw background gradient band
+    const g = ctx.createLinearGradient(0,0,0,H);
+    g.addColorStop(0, '#071a2a'); g.addColorStop(1,'#163a3f');
+    ctx.fillStyle = g; ctx.fillRect(0,0,W,H);
+    // draw simple faint circles
+    ctx.globalAlpha = 0.06;
+    for (let i=0;i<8;i++){ ctx.beginPath(); ctx.fillStyle = '#ffffff'; ctx.arc(40 + i*40, 80 + ((i*29)%H), 40 + (i%3)*20, 0, Math.PI*2); ctx.fill(); }
+    ctx.globalAlpha = 1;
+
+    // low-poly hills at bottom
+    ctx.fillStyle = '#2b6b3b';
+    ctx.beginPath(); ctx.moveTo(0,H-80);
+    ctx.lineTo(60,H-90); ctx.lineTo(120,H-70); ctx.lineTo(200,H-100); ctx.lineTo(280,H-74); ctx.lineTo(W,H-92); ctx.lineTo(W,H); ctx.lineTo(0,H);
+    ctx.closePath(); ctx.fill();
+
+    // draw powerups (behind enemies)
+    for (let p of powerups){
+      if (p.kind === 'weapon') ctx.fillStyle = '#ffd33d';
+      else if (p.kind === 'hp') ctx.fillStyle = '#ff4d4d';
+      else ctx.fillStyle = '#66c8ff';
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI*2); ctx.fill();
+      ctx.strokeStyle = 'rgba(0,0,0,0.15)'; ctx.lineWidth = 1; ctx.stroke();
+    }
+
+    // draw enemies
+    for (let e of enemies){
+      ctx.save();
+      if (e.type === 'small') {
+        // triangle pointing down
+        ctx.translate(e.x, e.y);
+        if (e._hit) { ctx.fillStyle = '#ffffff'; e._hit--; } else ctx.fillStyle = '#ff6b3b';
+        ctx.beginPath(); ctx.moveTo(0, -e.h/2); ctx.lineTo(-e.w/2, e.h/2); ctx.lineTo(e.w/2, e.h/2); ctx.closePath(); ctx.fill();
+        ctx.fillStyle = '#550000'; ctx.beginPath(); ctx.arc(0, -2, 3, 0, Math.PI*2); ctx.fill();
+      } else if (e.type === 'big') {
+        ctx.translate(e.x, e.y);
+        if (e._hit) { ctx.fillStyle = '#ffffff'; e._hit--; } else ctx.fillStyle = '#b23a3a';
+        ctx.beginPath(); ctx.moveTo(0, -e.h/2); ctx.lineTo(-e.w/2, e.h/2); ctx.lineTo(e.w/2, e.h/2); ctx.closePath(); ctx.fill();
+        ctx.fillStyle = '#ffccaa'; ctx.beginPath(); ctx.arc(0, 0, 6, 0, Math.PI*2); ctx.fill();
+      } else if (e.type === 'boss') {
+        ctx.translate(e.x, e.y);
+        ctx.fillStyle = '#552244';
+        roundRect(ctx, -e.w/2, -e.h/2, e.w, e.h, 10, true, false);
+        // boss core
+        ctx.fillStyle = '#ffccaa'; ctx.beginPath(); ctx.arc(0, 0, 18, 0, Math.PI*2); ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    // draw enemy bullets
+    ctx.fillStyle = '#ffb366';
+    for (let b of enemyBullets){
+      ctx.fillRect(b.x-2, b.y-4, 4, 8);
+    }
+
+    // draw player bullets
+    ctx.fillStyle = '#ffff88';
+    for (let b of bullets){
+      ctx.fillRect(b.x-2, b.y-6, 4, 10);
+    }
+
+    // draw player (ship) bottom
+    ctx.save();
+    ctx.translate(player.x, player.y);
+    // shadow
+    ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.beginPath(); ctx.ellipse(0, 18, 26, 8, 0, 0, Math.PI*2); ctx.fill();
+    // body
+    ctx.fillStyle = '#2b78a0'; roundRect(ctx, -18, -10, 36, 22, 6, true, false);
+    // nose
+    ctx.fillStyle = '#ff6b3b'; ctx.beginPath(); ctx.moveTo(18,-8); ctx.lineTo(28,0); ctx.lineTo(18,8); ctx.closePath(); ctx.fill();
+    // cockpit
+    ctx.fillStyle = '#88ccff'; roundRect(ctx, -4, -6, 8, 10, 3, true, false);
+    ctx.restore();
+
+    // small HUD elements maybe (score drawn by DOM already)
+  }
+
+  // helpers: rectangle and circle collisions
+  function pointRectCollide(px, py, rx, ry, rw, rh){
+    // treat rx,ry as center; convert to rect bounds
+    const left = rx - rw/2, right = rx + rw/2, top = ry - rh/2, bottom = ry + rh/2;
+    return px >= left && px <= right && py >= top && py <= bottom;
+  }
+  function rectCircleCollide(rx, ry, rw, rh, cx, cy, cr){
+    // rx,ry center rect
+    const left = rx - rw/2, right = rx + rw/2, top = ry - rh/2, bottom = ry + rh/2;
+    const nearestX = Math.max(left, Math.min(cx, right));
+    const nearestY = Math.max(top, Math.min(cy, bottom));
+    const dx = cx - nearestX, dy = cy - nearestY;
+    return (dx*dx + dy*dy) <= (cr*cr);
+  }
+  function pointCircleCollide(px, py, pw, ph, cx, cy, cr){
+    // approximate player as circle radius = max(pw,ph)/2
+    const pr = Math.max(pw,ph)/2;
+    const dx = px - cx, dy = py - cy; const dist2 = dx*dx + dy*dy;
+    const r = pr + cr;
+    return dist2 <= r*r;
+  }
+
+  function keysPressed(k,a){ return !!keys[k] || !!keys[a]; }
+
+  function roundRect(ctx, x, y, w, h, r, fill, stroke){
+    if (r===undefined) r = 5;
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+    if (fill) ctx.fill();
+    if (stroke) ctx.stroke();
+  }
+
+  // game over
+  function gameOver(){
+    running = false;
+    showOverlay('GAME OVER<br>Klik untuk main lagi');
+    playTone('gameover', 0.22);
+    // update HS
+    if (score > highscore) { highscore = score; localStorage.setItem('ase_hs', String(highscore)); uiHS.textContent = highscore; }
+    canvas.addEventListener('pointerdown', restartOnce, { once:true });
+  }
+
+  function restartOnce(){
+    startOverlay.style.display = 'none';
+    running = true;
+    // reset state but preserve highscore
+    bullets.length = enemies.length = enemyBullets.length = powerups.length = 0;
+    score = 0; level = 1; hp = START_HP; weaponLevel = 1; shipLevel = 1;
+    enemiesToClear = 6 + Math.floor(level*1.2);
+    lastEnemySpawn = performance.now();
+    lastAutoFire = performance.now();
+    requestAnimationFrame(loop);
+  }
+
+  function showOverlay(text){
+    startOverlay.style.display = 'block';
+    startOverlay.innerHTML = '<h2>' + (text.split('<br>')[0] || '') + '</h2><p style="color:#ddd">' + (text.split('<br>')[1] || '') + '</p><button id="startBtn" style="margin-top:12px;background:#2ecc71;border:none;padding:10px 18px;border-radius:8px;color:#052417;font-weight:700;font-size:16px">Mulai Lagi</button>';
+    document.getElementById('startBtn').addEventListener('click', ()=>{ startOverlay.style.display='none'; startGame(); });
+  }
+
+  // spawn powerup at (x,y)
+  function spawnPowerupAt(x,y){ spawnPowerupAt(x,y); } // alias to satisfy earlier usage
+  // (already defined)
+
+  // small helper: spawn enemy big or small shorthand used earlier in update
+  function spawnEnemy(kind) { spawnEnemy(kind); } // alias (exists)
+
+  // Kickstart UI & drawing static frame before start
+  render(); // draw initial screen
+  // small note: start overlay already visible
+
+})(); // IIFE end
 </script>
 </body>
 </html>
+
