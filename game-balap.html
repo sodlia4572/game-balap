@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Game Balap Mobil 3D</title>
+<style>
+    body { margin: 0; overflow: hidden; background: #000; }
+    #score {
+        position: absolute;
+        top: 10px; left: 10px;
+        color: white;
+        font-family: Arial, sans-serif;
+        font-size: 20px;
+        z-index: 10;
+    }
+</style>
+</head>
+<body>
+<div id="score">Score: 0</div>
+<script src="https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.min.js"></script>
+<script>
+let scene, camera, renderer;
+let player, road;
+let enemies = [];
+let score = 0;
+let gameOver = false;
+let speed = 0.1;
+
+init();
+animate();
+
+function init() {
+    scene = new THREE.Scene();
+    camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
+    camera.position.set(0, 5, 10);
+    camera.lookAt(0, 0, 0);
+
+    renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.body.appendChild(renderer.domElement);
+
+    const light = new THREE.DirectionalLight(0xffffff, 1);
+    light.position.set(0, 10, 5);
+    scene.add(light);
+    scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+
+    const roadGeo = new THREE.BoxGeometry(5, 0.1, 200);
+    const roadMat = new THREE.MeshPhongMaterial({ color: 0x333333 });
+    road = new THREE.Mesh(roadGeo, roadMat);
+    road.position.z = -100;
+    scene.add(road);
+
+    const carGeo = new THREE.BoxGeometry(1, 0.5, 2);
+    const carMat = new THREE.MeshPhongMaterial({ color: 0x00ff00 });
+    player = new THREE.Mesh(carGeo, carMat);
+    player.position.set(0, 0.5, 5);
+    scene.add(player);
+
+    window.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowLeft') player.position.x -= 1;
+        if (e.key === 'ArrowRight') player.position.x += 1;
+    });
+
+    window.addEventListener('touchstart', (e) => {
+        let x = e.touches[0].clientX;
+        if (x < window.innerWidth / 2) player.position.x -= 1;
+        else player.position.x += 1;
+    });
+
+    spawnEnemy();
+}
+
+function spawnEnemy() {
+    if (gameOver) return;
+    const enemyGeo = new THREE.BoxGeometry(1, 0.5, 2);
+    const enemyMat = new THREE.MeshPhongMaterial({ color: 0xff0000 });
+    const enemy = new THREE.Mesh(enemyGeo, enemyMat);
+    enemy.position.set((Math.random() * 4) - 2, 0.5, -50);
+    scene.add(enemy);
+    enemies.push(enemy);
+    setTimeout(spawnEnemy, 1000 + Math.random() * 1000);
+}
+
+function animate() {
+    requestAnimationFrame(animate);
+    if (!gameOver) {
+        enemies.forEach((enemy, index) => {
+            enemy.position.z += speed * 5;
+            if (enemy.position.z > 10) {
+                scene.remove(enemy);
+                enemies.splice(index, 1);
+                score++;
+                document.getElementById("score").innerText = "Score: " + score;
+            }
+            if (Math.abs(enemy.position.x - player.position.x) < 1 &&
+                Math.abs(enemy.position.z - player.position.z) < 1) {
+                gameOver = true;
+                document.getElementById("score").innerText += " - GAME OVER";
+            }
+        });
+        road.position.z += speed * 5;
+        if (road.position.z > 0) road.position.z = -100;
+    }
+    renderer.render(scene, camera);
+}
+</script>
+</body>
+</html>
